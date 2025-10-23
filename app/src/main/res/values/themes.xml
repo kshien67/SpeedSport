@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.SpeedSport" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Keep this empty. Compose uses MaterialTheme colorScheme. -->
+    </style>
+</resources>

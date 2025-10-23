@@ -1,0 +1,15 @@
+<resources>
+    <!-- DARK THEME -->
+    <color name="md_theme_dark_primary">#38BDF8</color>    <!-- Lighter Sky -->
+    <color name="md_theme_dark_onPrimary">#001B2A</color>
+    <color name="md_theme_dark_secondary">#34D399</color>  <!-- Lighter Green -->
+    <color name="md_theme_dark_onSecondary">#00210E</color>
+    <color name="md_theme_dark_tertiary">#FDBA74</color>   <!-- Lighter Orange -->
+    <color name="md_theme_dark_onTertiary">#2A1404</color>
+    <color name="md_theme_dark_background">#0B1220</color>
+    <color name="md_theme_dark_onBackground">#E6EEF9</color>
+    <color name="md_theme_dark_surface">#0F172A</color>
+    <color name="md_theme_dark_onSurface">#E6EEF9</color>
+    <color name="md_theme_dark_error">#F2B8B5</color>
+    <color name="md_theme_dark_onError">#601410</color>
+</resources>

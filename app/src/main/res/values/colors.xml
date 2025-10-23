@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- LIGHT THEME -->
+    <color name="md_theme_light_primary">#0EA5E9</color>
+    <color name="md_theme_light_onPrimary">#FFFFFF</color>
+    <color name="md_theme_light_secondary">#22C55E</color>
+    <color name="md_theme_light_onSecondary">#083314</color>
+    <color name="md_theme_light_tertiary">#FB923C</color>
+    <color name="md_theme_light_onTertiary">#3B2007</color>
+    <color name="md_theme_light_background">#FFFFFF</color>
+    <color name="md_theme_light_onBackground">#0B1220</color>
+    <color name="md_theme_light_surface">#FFFFFF</color>
+    <color name="md_theme_light_onSurface">#0B1220</color>
+    <color name="md_theme_light_error">#B3261E</color>
+    <color name="md_theme_light_onError">#FFFFFF</color>
+
+    <!-- Duplicate dark names so values-night can override safely -->
+    <color name="md_theme_dark_primary">#38BDF8</color>
+    <color name="md_theme_dark_onPrimary">#001B2A</color>
+    <color name="md_theme_dark_secondary">#34D399</color>
+    <color name="md_theme_dark_onSecondary">#00210E</color>
+    <color name="md_theme_dark_tertiary">#FDBA74</color>
+    <color name="md_theme_dark_onTertiary">#2A1404</color>
+    <color name="md_theme_dark_background">#0B1220</color>
+    <color name="md_theme_dark_onBackground">#E6EEF9</color>
+    <color name="md_theme_dark_surface">#0F172A</color>
+    <color name="md_theme_dark_onSurface">#E6EEF9</color>
+    <color name="md_theme_dark_error">#F2B8B5</color>
+    <color name="md_theme_dark_onError">#601410</color>
+
+    <!-- Legacy names used by default templates (harmless to keep) -->
+    <color name="purple_200">#BB86FC</color>
+    <color name="purple_500">#6200EE</color>
+    <color name="purple_700">#3700B3</color>
+    <color name="teal_200">#03DAC5</color>
+    <color name="teal_700">#018786</color>
+    <color name="black">#000000</color>
+    <color name="white">#FFFFFF</color>
+
+</resources>
