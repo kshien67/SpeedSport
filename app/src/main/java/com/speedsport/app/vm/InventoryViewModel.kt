@@ -1,18 +1,23 @@
 package com.speedsport.app.vm
 
 import androidx.lifecycle.ViewModel
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.viewModelScope
 import com.speedsport.app.data.rtdb.EquipmentDto
 import com.speedsport.app.data.rtdb.RtdbRepo
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 class InventoryViewModel : ViewModel() {
-    suspend fun items(): List<EquipmentDto> =
-        withContext(Dispatchers.IO) { RtdbRepo.listEquipment() }
+    var items by mutableStateOf<List<EquipmentDto>>(emptyList())
+        private set
 
-    suspend fun rent(id: String, qty: Int): Boolean =
-        withContext(Dispatchers.IO) { RtdbRepo.rent(id, qty) }
+    fun loadAll() = viewModelScope.launch {
+        items = RtdbRepo.listEquipmentBySportOrAll("ALL")
+    }
 
-    suspend fun restock() =
-        withContext(Dispatchers.IO) { RtdbRepo.restockAll() }
+    fun refresh(filterSport: String? = "ALL") = viewModelScope.launch {
+        items = RtdbRepo.listEquipmentBySportOrAll(filterSport)
+    }
 }

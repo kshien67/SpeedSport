@@ -9,12 +9,19 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.speedsport.app.vm.AuthViewModel
 import kotlinx.coroutines.launch
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.database.FirebaseDatabase
+import kotlinx.coroutines.tasks.await
+
+private const val DB_URL =
+    "https://speedsport-edf02-default-rtdb.asia-southeast1.firebasedatabase.app"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginScreen(
     onLoggedIn: () -> Unit,
     onGoRegister: () -> Unit,
+    onLoggedInAdmin: () -> Unit = onLoggedIn,
     vm: AuthViewModel = viewModel()
 ) {
     var email by remember { mutableStateOf("") }
@@ -49,8 +56,25 @@ fun LoginScreen(
                     vm.login(
                         email = email,
                         password = password,
-                        onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } }, // ✅
-                        onDone = onLoggedIn
+                        onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
+                        onDone = {
+                            scope.launch {
+                                val auth = FirebaseAuth.getInstance()
+                                val uid = auth.currentUser?.uid
+                                val isAdmin = try {
+                                    if (uid == null) false
+                                    else {
+                                        val snap = FirebaseDatabase.getInstance(DB_URL)
+                                            .reference.child("users").child(uid).get().await()
+                                        val a  = snap.child("admin").getValue(Boolean::class.java) == true
+                                        val ia = snap.child("isAdmin").getValue(Boolean::class.java) == true
+                                        a || ia
+                                    }
+                                } catch (_: Exception) { false }
+
+                                if (isAdmin) onLoggedInAdmin() else onLoggedIn()
+                            }
+                        }
                     )
                 },
                 modifier = Modifier.fillMaxWidth()

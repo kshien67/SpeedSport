@@ -1,4 +1,8 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class
+)
+
 
 package com.speedsport.app.ui.screens
 
@@ -7,6 +11,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,6 +32,9 @@ import java.time.Instant
 import java.time.LocalDate as JLocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ServerValue
 
 /* ----- RTDB URL: must match your Firebase console ----- */
 private const val DB_URL =
@@ -37,6 +46,7 @@ private const val DB_URL =
  *  - If user taps only once, it's a 1-hour booking
  *  - Equipment selection
  *  - Back arrow (when onBack != null)
+ *  - Join waitlist for already-booked slots
  */
 @Composable
 fun BookingScreen(
@@ -73,7 +83,7 @@ fun BookingScreen(
     LaunchedEffect(selectedSport) { selectedEquip.clear() }
 
     // ------------ Time / bookings ------------
-    val allSlots = remember { (8 until 22).map { "%02d:00".format(it) } }
+    val allSlots = remember { (8 until 22).map { "%02d:00".format(it) } } // 08:00..21:00 starts
     val dateKey = remember(selectedDate) { selectedDate.asKey() }
     val takenStarts = rememberTakenStarts(selectedCourt, dateKey)
 
@@ -104,7 +114,7 @@ fun BookingScreen(
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(
-                                imageVector = androidx.compose.material.icons.Icons.Filled.ArrowBack,
+                                imageVector = Icons.Filled.ArrowBack,
                                 contentDescription = "Back"
                             )
                         }
@@ -189,6 +199,42 @@ fun BookingScreen(
                             label = { Text(slot) },
                             colors = if (isBooked) bookedColors else FilterChipDefaults.filterChipColors()
                         )
+                    }
+                }
+
+                // NEW: Booked slots → allow Join Waitlist
+                val bookedSlots = remember(takenStarts) { allSlots.filter { it in takenStarts } }
+                if (selectedCourt.isNotBlank() && bookedSlots.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("Booked slots (join waitlist):", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(6.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        bookedSlots.forEach { st ->
+                            val slotKey = "$st-${plusOneHour(st)}"
+                            AssistChip(
+                                onClick = {
+                                    val courtName = facilities.firstOrNull { it.id == selectedCourt }?.name ?: selectedCourt
+                                    joinWaitlist(
+                                        sport = selectedSport.ifBlank { "Unknown" },
+                                        courtId = selectedCourt,
+                                        courtName = courtName,
+                                        dateKey = dateKey,
+                                        slotKey = slotKey
+                                    ) { ok ->
+                                        scope.launch {
+                                            snackbar.showSnackbar(
+                                                if (ok) "Joined waitlist for $slotKey"
+                                                else "Failed to join waitlist"
+                                            )
+                                        }
+                                    }
+                                },
+                                label = { Text(slotKey) }
+                            )
+                        }
                     }
                 }
             }
@@ -621,4 +667,37 @@ private fun String.extractSportType(): String? {
     val lettersOnly = this.takeWhile { it.isLetter() }
     if (lettersOnly.isEmpty()) return null
     return lettersOnly.replaceFirstChar { it.uppercase() }
+}
+
+/* ----- Waitlist write (client-only MVP) ----- */
+private fun joinWaitlist(
+    sport: String,
+    courtId: String,
+    courtName: String,
+    dateKey: String,
+    slotKey: String,
+    onResult: (Boolean) -> Unit
+) {
+    val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return onResult(false)
+    val db = FirebaseDatabase.getInstance(DB_URL).reference
+
+    val reqId = db.child("facilityWaitlist").child(courtId).child(dateKey).child(slotKey).push().key
+        ?: return onResult(false)
+
+    val data = mapOf(
+        "userId" to uid,
+        "joinedAt" to ServerValue.TIMESTAMP,
+        "status" to "queued",
+        "sport" to sport,
+        "courtName" to courtName
+    )
+
+    val updates = hashMapOf<String, Any>(
+        "/facilityWaitlist/$courtId/$dateKey/$slotKey/$reqId" to data,
+        "/userWaitlist/$uid/$reqId" to true
+    )
+
+    db.updateChildren(updates)
+        .addOnSuccessListener { onResult(true) }
+        .addOnFailureListener { onResult(false) }
 }
