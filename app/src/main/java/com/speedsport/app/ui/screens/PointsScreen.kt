@@ -18,155 +18,86 @@ import com.google.firebase.database.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-/** Use your RTDB URL */
 private const val DB_URL =
     "https://speedsport-edf02-default-rtdb.asia-southeast1.firebasedatabase.app"
 
-/** UI row model for the points list */
-private data class PointsRowUi(
-    val createdAt: Long,
-    val amount: Int,            // + earn, - spend
-    val title: String,          // "Booking" / "Voucher"
-    val note: String            // e.g. "Court A — 2025-10-23 (2h)"
+private data class PointsEvent(
+    val id: String,
+    val delta: Int,      // + earn, - spend
+    val reason: String,
+    val ts: Long
 )
 
 @Composable
-fun PointsScreen(
-    onBack: () -> Unit
-) {
+fun PointsScreen(onBack: () -> Unit) {
     val uid = FirebaseAuth.getInstance().currentUser?.uid
-
     var balance by remember { mutableStateOf(0) }
-    var bookingRows by remember { mutableStateOf<List<PointsRowUi>>(emptyList()) }
-    var voucherRows by remember { mutableStateOf<List<PointsRowUi>>(emptyList()) }
+    var events by remember { mutableStateOf<List<PointsEvent>>(emptyList()) }
 
-    // Live points balance
+    // Live balance
     DisposableEffect(uid) {
         if (uid == null) return@DisposableEffect onDispose { }
         val ref = FirebaseDatabase.getInstance(DB_URL)
             .reference.child("users").child(uid).child("points")
-
-        val listener = object : ValueEventListener {
-            override fun onDataChange(s: DataSnapshot) {
-                balance = (s.value as? Number)?.toInt() ?: 0
-            }
-            override fun onCancelled(error: DatabaseError) { /* no-op */ }
+        val l = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { balance = (s.value as? Number)?.toInt() ?: 0 }
+            override fun onCancelled(error: DatabaseError) {}
         }
-        ref.addValueEventListener(listener)
-        onDispose { ref.removeEventListener(listener) }
+        ref.addValueEventListener(l)
+        onDispose { ref.removeEventListener(l) }
     }
 
-    // Booking history → +points
-    DisposableEffect(uid) {
-        if (uid == null) return@DisposableEffect onDispose { }
-        val bookingsQuery = FirebaseDatabase.getInstance(DB_URL)
-            .reference.child("bookings")
-            .orderByChild("userUid").equalTo(uid)
-
-        val listener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                val rows = mutableListOf<PointsRowUi>()
-                for (b in snapshot.children) {
-                    val totalPaid = (b.child("totalPaid").value as? Number)?.toDouble() ?: 0.0
-                    val pts = totalPaid.toInt() // 1 RM = 1 pt (floor)
-                    val facility = b.child("facilityName").getValue(String::class.java) ?: "Court"
-                    val dateIso = b.child("date").getValue(String::class.java) ?: ""
-                    val hours = b.child("times").children.count()
-                    val createdAt = (b.child("createdAt").value as? Number)?.toLong()
-                        ?: System.currentTimeMillis()
-
-                    rows += PointsRowUi(
-                        createdAt = createdAt,
-                        amount = pts,
-                        title = "Booking",
-                        note = "$facility — $dateIso (${hours}h)"
-                    )
-                }
-                // newest first
-                bookingRows = rows.sortedByDescending { it.createdAt }
-            }
-            override fun onCancelled(error: DatabaseError) { /* no-op */ }
-        }
-        bookingsQuery.addValueEventListener(listener)
-        onDispose { bookingsQuery.removeEventListener(listener) }
-    }
-
-    // Voucher purchases (optional) → -points
+    // Unified history: reads what VoucherScreen & Checkout write
     DisposableEffect(uid) {
         if (uid == null) return@DisposableEffect onDispose { }
         val ref = FirebaseDatabase.getInstance(DB_URL)
-            .reference.child("users").child(uid).child("voucherPurchases")
-
-        val listener = object : ValueEventListener {
+            .reference.child("users").child(uid).child("pointsHistory")
+        val l = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                val rows = mutableListOf<PointsRowUi>()
-                for (c in snapshot.children) {
-                    val cost = (c.child("costPoints").value as? Number)?.toInt()
-                        ?: continue
-                    val title = c.child("title").getValue(String::class.java) ?: "Voucher"
-                    val ts = (c.child("createdAt").value as? Number)?.toLong()
-                        ?: System.currentTimeMillis()
-
-                    rows += PointsRowUi(
-                        createdAt = ts,
-                        amount = -cost,
-                        title = "Voucher",
-                        note = title
+                events = snapshot.children.mapNotNull { n ->
+                    val id = n.key ?: return@mapNotNull null
+                    PointsEvent(
+                        id = id,
+                        delta = (n.child("delta").value as? Number)?.toInt() ?: 0,
+                        reason = n.child("reason").getValue(String::class.java) ?: "Activity",
+                        ts = (n.child("ts").value as? Number)?.toLong() ?: 0L
                     )
-                }
-                voucherRows = rows.sortedByDescending { it.createdAt }
+                }.sortedByDescending { it.ts }
             }
-            override fun onCancelled(error: DatabaseError) { /* no-op */ }
+            override fun onCancelled(error: DatabaseError) {}
         }
-        ref.addValueEventListener(listener)
-        onDispose { ref.removeEventListener(listener) }
+        ref.addValueEventListener(l)
+        onDispose { ref.removeEventListener(l) }
     }
 
-    // Combine & sort
-    val allRows by remember(bookingRows, voucherRows) {
-        mutableStateOf((bookingRows + voucherRows).sortedByDescending { it.createdAt })
-    }
-
-    // -------- UI --------
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Points") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
-                    }
+                    IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, null) }
                 }
             )
         }
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            // Balance
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
                 Text("Current balance", style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    "$balance pts",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Text("$balance pts", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             }
             Divider()
-
-            // History list
-            if (allRows.isEmpty()) {
+            if (events.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("No points history yet")
                 }
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(allRows) { r ->
-                        PointsRow(r)
-                    }
+                    items(events, key = { it.id }) { PointsRow(it) }
                 }
             }
         }
@@ -174,12 +105,12 @@ fun PointsScreen(
 }
 
 @Composable
-private fun PointsRow(r: PointsRowUi) {
-    val sign = if (r.amount >= 0) "+" else ""
-    val color = if (r.amount >= 0) MaterialTheme.colorScheme.primary
+private fun PointsRow(e: PointsEvent) {
+    val sign = if (e.delta >= 0) "+" else ""
+    val color = if (e.delta >= 0) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.error
     val df = remember { SimpleDateFormat("yyyy-MM-dd  HH:mm", Locale.getDefault()) }
-    val dateStr = df.format(Date(r.createdAt))
+    val dateStr = df.format(Date(if (e.ts == 0L) System.currentTimeMillis() else e.ts))
 
     ElevatedCard {
         Row(
@@ -187,22 +118,10 @@ private fun PointsRow(r: PointsRowUi) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
-                Text(r.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                if (r.note.isNotBlank()) {
-                    Text(r.note, style = MaterialTheme.typography.bodySmall)
-                }
-                Text(
-                    dateStr,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(e.reason, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(dateStr, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text(
-                "$sign${r.amount} pts",
-                style = MaterialTheme.typography.titleMedium,
-                color = color,
-                fontWeight = FontWeight.SemiBold
-            )
+            Text("$sign${e.delta} pts", color = color, fontWeight = FontWeight.SemiBold)
         }
     }
 }

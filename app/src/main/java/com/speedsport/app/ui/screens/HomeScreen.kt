@@ -1,30 +1,43 @@
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.ExperimentalFoundationApi::class
+)
+
 package com.speedsport.app.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CalendarMonth
-import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.LocalOffer
 import androidx.compose.material.icons.rounded.Notifications
-import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.database.*
+import kotlinx.coroutines.delay
+
+private const val DB_URL =
+    "https://speedsport-edf02-default-rtdb.asia-southeast1.firebasedatabase.app"
 
 @Composable
 fun HomeScreen(
@@ -33,28 +46,57 @@ fun HomeScreen(
     onWaitlist: () -> Unit,
     onProfile: () -> Unit,
     onSchedule: () -> Unit,
-
-    // NEW: hook up navigation for these
     onPoints: () -> Unit,
     onVoucher: () -> Unit,
-
-    // Optional: tap on the purple “POINTS” banner
-    onTapPointsBanner: () -> Unit = onPoints
+    onTapPointsBanner: () -> Unit = onPoints,
+    bannerImages: List<Int> = listOf(
+        com.speedsport.app.R.drawable.sportfact_1,
+        com.speedsport.app.R.drawable.sportfact_2,
+        com.speedsport.app.R.drawable.sportfact_3
+    )
 ) {
+    val uid = FirebaseAuth.getInstance().currentUser?.uid
+    var points by remember { mutableStateOf(0) }
+    var username by remember { mutableStateOf("") }
+
+    // Live points
+    DisposableEffect(uid) {
+        if (uid == null) return@DisposableEffect onDispose {}
+        val ref = FirebaseDatabase.getInstance(DB_URL).reference
+            .child("users").child(uid).child("points")
+        val l = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { points = (s.value as? Number)?.toInt() ?: 0 }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        ref.addValueEventListener(l)
+        onDispose { ref.removeEventListener(l) }
+    }
+
+    // Live username
+    DisposableEffect(uid) {
+        if (uid == null) return@DisposableEffect onDispose {}
+        val ref = FirebaseDatabase.getInstance(DB_URL).reference
+            .child("users").child(uid).child("name")
+        val l = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) {
+                val raw = s.getValue(String::class.java) ?: ""
+                username = raw.trim()
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        ref.addValueEventListener(l)
+        onDispose { ref.removeEventListener(l) }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Malaysia", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Icon(Icons.Rounded.ExpandMore, contentDescription = null)
-            Spacer(Modifier.weight(1f))
-        }
-
-        Spacer(Modifier.height(8.dp))
-        BannerPlaceholder(
+        // Carousel banner (auto-slides every 5s, swipeable)
+        BannerCarousel(
+            images = bannerImages,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(160.dp)
@@ -62,7 +104,8 @@ fun HomeScreen(
         )
 
         Spacer(Modifier.height(12.dp))
-        // Light purple “POINTS” banner — make it clickable
+
+        // POINTS banner (tappable)
         ElevatedCard(
             modifier = Modifier
                 .fillMaxWidth()
@@ -80,27 +123,44 @@ fun HomeScreen(
             ) {
                 Text("POINTS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
-                // The right-side live points number is already bound elsewhere on your screen;
-                // you can slot it in here if you have a state.
-                Text("586 pts", style = MaterialTheme.typography.titleMedium)
+                Text("$points pts", style = MaterialTheme.typography.titleMedium)
             }
         }
 
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Hi there!", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(" ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        // Greeting row – avatar icon + welcome text
+        ListItem(
+            leadingContent = {
+                Box(
+                    Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Rounded.Person, contentDescription = "Profile")
+                }
+            },
+            headlineContent = {
+                val firstName = remember(username) {
+                    username.split(" ").firstOrNull().orEmpty()
+                }
+                val greet = if (firstName.isNotBlank()) "Welcome back, $firstName"
+                else "Welcome back"
+                Text(greet, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            },
+            trailingContent = {
+                IconButton(onClick = { /* notifications */ }) {
+                    Icon(Icons.Rounded.Notifications, contentDescription = null)
+                }
             }
-            IconButton(onClick = { }) { Icon(Icons.Rounded.Notifications, null) }
-        }
+        )
 
         Spacer(Modifier.height(16.dp))
+
         AccountWidget(
+            points = points,
             onPoints = onPoints,
             onVoucher = onVoucher,
             onWaitingList = onWaitlist,
@@ -111,37 +171,65 @@ fun HomeScreen(
     }
 }
 
+/* ───────────── Banner Carousel ───────────── */
+
 @Composable
-private fun BannerPlaceholder(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.background(
-            Brush.linearGradient(
-                colors = listOf(
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.85f)
-                )
+private fun BannerCarousel(
+    images: List<Int>,
+    modifier: Modifier = Modifier,
+    autoSlideMillis: Long = 5_000L
+) {
+    val pageCount = images.size.coerceAtLeast(1)
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { pageCount })
+
+    // Auto-slide every 5 seconds
+    LaunchedEffect(pageCount) {
+        if (pageCount <= 1) return@LaunchedEffect
+        while (true) {
+            delay(autoSlideMillis)
+            val next = (pagerState.currentPage + 1) % pageCount
+            pagerState.animateScrollToPage(next)
+        }
+    }
+
+    Box(modifier) {
+        HorizontalPager(state = pagerState, modifier = Modifier.matchParentSize()) { page ->
+            Image(
+                painter = painterResource(id = images[page]),
+                contentDescription = "Banner $page",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
             )
-        )
-    ) {
+        }
+
+        // Dots indicator
         Row(
-            Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            repeat(4) { idx ->
-                val active = idx == 1
+            repeat(pageCount) { idx ->
+                val active = idx == pagerState.currentPage
                 Box(
                     Modifier
                         .size(if (active) 10.dp else 8.dp)
                         .clip(CircleShape)
-                        .background(if (active) Color.White else Color.White.copy(alpha = 0.5f))
+                        .background(
+                            if (active) MaterialTheme.colorScheme.surface
+                            else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                        )
                 )
             }
         }
     }
 }
 
+/* ───────────── Account Grid ───────────── */
+
 @Composable
 private fun AccountWidget(
+    points: Int,
     onPoints: () -> Unit,
     onVoucher: () -> Unit,
     onWaitingList: () -> Unit,
@@ -149,9 +237,8 @@ private fun AccountWidget(
 ) {
     ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.padding(16.dp)) {
-            // 2x2 grid — each tile is clickable
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MiniTile("Points", "586", { Icon(Icons.Rounded.Star, null) }, onPoints, Modifier.weight(1f))
+                MiniTile("Points", "$points", { Icon(Icons.Rounded.Star, null) }, onPoints, Modifier.weight(1f))
                 MiniTile("Voucher", "Shop & mine", { Icon(Icons.Rounded.LocalOffer, null) }, onVoucher, Modifier.weight(1f))
             }
             Spacer(Modifier.height(12.dp))

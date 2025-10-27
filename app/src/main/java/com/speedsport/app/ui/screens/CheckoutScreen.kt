@@ -14,7 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.*
 import com.google.firebase.database.ServerValue
 import com.speedsport.app.domain.BookingDraft
 import kotlinx.coroutines.launch
@@ -38,6 +38,13 @@ private fun selectedTimeLabel(starts: List<String>): String {
     return "$from - $to"
 }
 
+/* Voucher applied holder */
+private data class AppliedVoucher(
+    val id: String,
+    val code: String,
+    val amountOffMYR: Int
+)
+
 /* ------- UI ------- */
 @Composable
 fun CheckoutScreen(
@@ -48,9 +55,12 @@ fun CheckoutScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    val uid = FirebaseAuth.getInstance().currentUser?.uid
+
     var voucherCode by remember { mutableStateOf("") }
     var voucherDiscount by remember { mutableStateOf(0.0) }
     var applying by remember { mutableStateOf(false) }
+    var appliedVoucher by remember { mutableStateOf<AppliedVoucher?>(null) }
 
     val subtotal = draft.totalBeforeDiscount()
     val totalAfterDiscount = (subtotal - voucherDiscount).coerceAtLeast(0.0)
@@ -97,16 +107,26 @@ fun CheckoutScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = voucherCode,
-                            onValueChange = { voucherCode = it.trim().uppercase() },
+                            onValueChange = {
+                                voucherCode = it.trim().uppercase()
+                                // If user edits code again, clear previous apply
+                                voucherDiscount = 0.0
+                                appliedVoucher = null
+                            },
                             label = { Text("Voucher code") },
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(Modifier.width(8.dp))
                         Button(
-                            enabled = voucherCode.isNotEmpty() && !applying,
+                            enabled = voucherCode.isNotEmpty() && !applying && uid != null,
                             onClick = {
                                 applying = true
-                                tryApplyVoucher(voucherCode, subtotal) { discount, message ->
+                                tryApplyVoucherFirebase(
+                                    uid = uid!!,
+                                    code = voucherCode,
+                                    subtotal = subtotal
+                                ) { v, discount, message ->
+                                    appliedVoucher = v
                                     voucherDiscount = discount
                                     applying = false
                                     scope.launch { snackbar.showSnackbar(message) }
@@ -132,26 +152,23 @@ fun CheckoutScreen(
 
             Button(
                 onClick = {
-                    // Write booking → show snackbar → then navigate
                     confirmAndWriteBooking(
                         draft = draft,
                         totalPaid = totalAfterDiscount,
                         pointsToAdd = pointsEarned,
+                        appliedVoucher = appliedVoucher,
                         onConflict = {
                             scope.launch {
                                 snackbar.showSnackbar("One of your time slots was just booked. Please reselect.")
                             }
                         },
                         onError = { err ->
-                            scope.launch {
-                                val msg = err ?: "Booking failed"
-                                snackbar.showSnackbar(msg)              // show failure
-                            }
+                            scope.launch { snackbar.showSnackbar(err ?: "Booking failed") }
                         },
                         onSuccess = {
                             scope.launch {
-                                snackbar.showSnackbar("Booking confirmed!") // show success
-                                onBooked()                                   // then navigate to Schedule
+                                snackbar.showSnackbar("Booking confirmed!")
+                                onBooked()
                             }
                         }
                     )
@@ -181,13 +198,38 @@ private fun SummaryRowBold(label: String, value: String) {
     }
 }
 
-/* --- Voucher stub (0 unless you later add real vouchers) --- */
-private fun tryApplyVoucher(
+/* --- Voucher apply (Firebase) --- */
+private fun tryApplyVoucherFirebase(
+    uid: String,
     code: String,
     subtotal: Double,
-    onResult: (discount: Double, message: String) -> Unit
+    onResult: (applied: AppliedVoucher?, discount: Double, message: String) -> Unit
 ) {
-    onResult(0.0, "No voucher found. (Stub)")
+    val ref = FirebaseDatabase.getInstance(DB_URL)
+        .reference.child("users").child(uid).child("vouchers")
+
+    ref.orderByChild("code").equalTo(code)
+        .addListenerForSingleValueEvent(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val node = snapshot.children.firstOrNull()
+                if (node == null) {
+                    onResult(null, 0.0, "Invalid voucher code"); return
+                }
+                val used = node.child("used").getValue(Boolean::class.java) ?: false
+                if (used) {
+                    onResult(null, 0.0, "This voucher was already used"); return
+                }
+                val amount = (node.child("amountOffMYR").value as? Number)?.toInt() ?: 0
+                val id = node.key ?: ""
+                val discount = amount.coerceAtMost(subtotal.toInt()).toDouble()
+                onResult(AppliedVoucher(id = id, code = code, amountOffMYR = amount),
+                    discount, "Voucher applied: RM$amount")
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                onResult(null, 0.0, error.message)
+            }
+        })
 }
 
 /* --- Booking write + facilityBookings block (with conflict check) --- */
@@ -195,6 +237,7 @@ private fun confirmAndWriteBooking(
     draft: BookingDraft,
     totalPaid: Double,
     pointsToAdd: Int,
+    appliedVoucher: AppliedVoucher?,
     onConflict: () -> Unit,
     onError: (message: String?) -> Unit,
     onSuccess: () -> Unit
@@ -219,7 +262,7 @@ private fun confirmAndWriteBooking(
             }
 
             // 2) Prepare write
-            val bookingMap = mapOf(
+            val bookingMap = mutableMapOf<String, Any>(
                 "userUid" to uid,
                 "date" to dateKey,
                 "sport" to draft.sport,
@@ -227,10 +270,19 @@ private fun confirmAndWriteBooking(
                 "facilityName" to draft.courtName,
                 "ratePerHour" to draft.courtRatePerHour,
                 "times" to hours,
-                "equipment" to draft.equipment.associate { it.id to mapOf("name" to it.name, "qty" to it.qty, "rate" to it.rate) },
+                "equipment" to draft.equipment.associate {
+                    it.id to mapOf("name" to it.name, "qty" to it.qty, "rate" to it.rate)
+                },
                 "totalPaid" to totalPaid,
                 "createdAt" to System.currentTimeMillis()
             )
+
+            appliedVoucher?.let { v ->
+                bookingMap["voucher"] = mapOf(
+                    "code" to v.code,
+                    "amountOffMYR" to v.amountOffMYR
+                )
+            }
 
             val updates = hashMapOf<String, Any>(
                 "/bookings/$bookingId" to bookingMap,
@@ -238,6 +290,12 @@ private fun confirmAndWriteBooking(
                 "/users/$uid/points" to ServerValue.increment(pointsToAdd.toLong()),
             )
             slotKeys.forEach { k -> updates["/facilityBookings/$courtId/$dateKey/$k"] = bookingId }
+
+            // If voucher used, mark it
+            appliedVoucher?.let { v ->
+                updates["/users/$uid/vouchers/${v.id}/used"] = true
+                updates["/users/$uid/vouchers/${v.id}/usedAt"] = ServerValue.TIMESTAMP
+            }
 
             // 3) Commit
             db.updateChildren(updates)
