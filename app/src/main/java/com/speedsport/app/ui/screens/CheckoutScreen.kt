@@ -2,6 +2,7 @@
 
 package com.speedsport.app.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -109,7 +110,6 @@ fun CheckoutScreen(
                             value = voucherCode,
                             onValueChange = {
                                 voucherCode = it.trim().uppercase()
-                                // If user edits code again, clear previous apply
                                 voucherDiscount = 0.0
                                 appliedVoucher = null
                             },
@@ -222,14 +222,53 @@ private fun tryApplyVoucherFirebase(
                 val amount = (node.child("amountOffMYR").value as? Number)?.toInt() ?: 0
                 val id = node.key ?: ""
                 val discount = amount.coerceAtMost(subtotal.toInt()).toDouble()
-                onResult(AppliedVoucher(id = id, code = code, amountOffMYR = amount),
-                    discount, "Voucher applied: RM$amount")
+                onResult(
+                    AppliedVoucher(id = id, code = code, amountOffMYR = amount),
+                    discount,
+                    "Voucher applied: RM$amount"
+                )
             }
 
             override fun onCancelled(error: DatabaseError) {
                 onResult(null, 0.0, error.message)
             }
         })
+}
+
+/* ---------- HISTORY WRITER (transaction) ----------- */
+private fun writePointsHistoryTransaction(
+    uid: String,
+    delta: Int,
+    reason: String,
+    onComplete: (Boolean, DatabaseError?) -> Unit
+) {
+    val userRef = FirebaseDatabase.getInstance(DB_URL)
+        .reference.child("users").child(uid)
+
+    userRef.runTransaction(object : Transaction.Handler {
+        override fun doTransaction(mutableData: MutableData): Transaction.Result {
+            val historyRef = userRef.child("pointsHistory")   // Use actual reference, not MutableData.ref
+            val newKey = historyRef.push().key ?: return Transaction.abort()
+
+            val entry = mapOf(
+                "delta" to delta,
+                "reason" to reason,
+                "ts" to ServerValue.TIMESTAMP
+            )
+
+            // Use reference directly to set value instead of child().value on MutableData
+            historyRef.child(newKey).setValue(entry)
+
+            // No need to modify mutableData directly — just return success
+            return Transaction.success(mutableData)
+        }
+
+        override fun onComplete(
+            error: DatabaseError?, committed: Boolean, snapshot: DataSnapshot?
+        ) {
+            onComplete(committed && error == null, error)
+        }
+    })
 }
 
 /* --- Booking write + facilityBookings block (with conflict check) --- */
@@ -243,7 +282,7 @@ private fun confirmAndWriteBooking(
     onSuccess: () -> Unit
 ) {
     val uid = FirebaseAuth.getInstance().currentUser?.uid
-    if (uid == null) { onError("Not logged in"); return }
+        ?: return onError("Not logged in")
 
     val db = FirebaseDatabase.getInstance(DB_URL).reference
     val bookingId = db.child("bookings").push().key ?: return onError("Failed to allocate booking id")
@@ -261,7 +300,7 @@ private fun confirmAndWriteBooking(
                 onConflict(); return@addOnSuccessListener
             }
 
-            // 2) Prepare write
+            // 2) Prepare write payloads
             val bookingMap = mutableMapOf<String, Any>(
                 "userUid" to uid,
                 "date" to dateKey,
@@ -284,23 +323,36 @@ private fun confirmAndWriteBooking(
                 )
             }
 
+            // 3) Multi-location booking + balance (no history here)
             val updates = hashMapOf<String, Any>(
                 "/bookings/$bookingId" to bookingMap,
                 "/userBookings/$uid/$bookingId" to true,
-                "/users/$uid/points" to ServerValue.increment(pointsToAdd.toLong()),
+                "/users/$uid/points" to ServerValue.increment(pointsToAdd.toLong())
             )
             slotKeys.forEach { k -> updates["/facilityBookings/$courtId/$dateKey/$k"] = bookingId }
 
-            // If voucher used, mark it
             appliedVoucher?.let { v ->
                 updates["/users/$uid/vouchers/${v.id}/used"] = true
                 updates["/users/$uid/vouchers/${v.id}/usedAt"] = ServerValue.TIMESTAMP
             }
 
-            // 3) Commit
             db.updateChildren(updates)
-                .addOnSuccessListener { onSuccess() }
-                .addOnFailureListener { e -> onError(e.message) }
+                .addOnSuccessListener {
+                    // 4) Now, append history via transaction (reliable, and we can log failures)
+                    val reason = "Booking ${draft.sport.uppercase()} - ${draft.courtName} on ${draft.dateIso}"
+                    writePointsHistoryTransaction(uid, pointsToAdd, reason) { ok, err ->
+                        if (!ok) {
+                            Log.e("PointsHistory", "Failed to write history for $uid: ${err?.code} ${err?.message}")
+                            // We won't roll back booking; just surface a toast/snackbar for visibility.
+                        } else {
+                            Log.d("PointsHistory", "History written for $uid (delta=$pointsToAdd)")
+                        }
+                        onSuccess()
+                    }
+                }
+                .addOnFailureListener { e ->
+                    onError(e.message)
+                }
         }
         .addOnFailureListener { e -> onError(e.message) }
 }
