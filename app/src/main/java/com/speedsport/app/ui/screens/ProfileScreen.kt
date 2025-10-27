@@ -10,8 +10,31 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -180,7 +203,9 @@ fun ProfileHomeScreen(
                 supportingContent = { Text("Name, phone number") },
                 leadingContent = { Icon(Icons.Filled.Person, null) },
                 trailingContent = { Icon(Icons.Filled.ChevronRight, null) },
-                modifier = Modifier.fillMaxWidth().clickable { onEditProfile() }
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onEditProfile() }
             )
 
             ListItem(
@@ -204,7 +229,9 @@ fun ProfileHomeScreen(
                 supportingContent = { Text("FAQs and support (coming soon)") },
                 leadingContent = { Icon(Icons.Filled.HelpOutline, null) },
                 trailingContent = { Icon(Icons.Filled.ChevronRight, null) },
-                modifier = Modifier.fillMaxWidth().clickable { onGetHelp() }
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onGetHelp() }
             )
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
@@ -214,7 +241,9 @@ fun ProfileHomeScreen(
                     FirebaseAuth.getInstance().signOut()
                     onLoggedOut()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Log out") }
         }
@@ -273,7 +302,11 @@ fun EditProfileScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Account",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
 
             OutlinedTextField(
                 value = email,
@@ -324,7 +357,9 @@ fun EditProfileScreen(
                     FirebaseAuth.getInstance().signOut()
                     onLoggedOut()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Log out") }
         }

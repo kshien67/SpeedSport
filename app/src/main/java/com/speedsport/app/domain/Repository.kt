@@ -36,7 +36,10 @@ object Repo {
 
     /** Return taken start times as "HH:mm" strings for a (facility, date). */
     fun takenTimeStrings(facilityId: String, date: LocalDate): Set<String> =
-        listBookings(facilityId, date).map { formatHm(it.start) }.toSet()
+        listBookings(facilityId, date)
+            .filter { it.status != BookingStatus.CANCELLED } // cancelled slots are free
+            .map { formatHm(it.start) }
+            .toSet()
 
     // ---------- Booking (original, start+end given) ----------
     fun book(
@@ -48,6 +51,7 @@ object Repo {
     ): Result<Booking> {
         val clash = bookings.any {
             it.facilityId == facilityId && it.date == date &&
+                    it.status != BookingStatus.CANCELLED &&           // ignore cancelled bookings
                     !(end <= it.start || start >= it.end)
         }
         return if (!clash) {
@@ -56,11 +60,15 @@ object Repo {
                 date = date,
                 start = start,
                 end = end,
-                bookedBy = name
+                bookedBy = name,
+                paid = false,
+                status = BookingStatus.BOOKED,
+                cancellationRequest = null
             )
             bookings += b
             Result.success(b)
         } else {
+            // No slot -> FIFO waitlist
             waitlist += WaitlistEntry(
                 facilityId = facilityId,
                 date = date,
@@ -84,16 +92,52 @@ object Repo {
         return book(facilityId, date, start, end, name)
     }
 
-    fun cancel(bookingId: String): Boolean {
+    /* ==========================================================
+       New cancellation workflow
+       ========================================================== */
+
+    /** User requests to cancel: set status to PENDING_CANCEL and save note. */
+    fun requestCancellation(bookingId: String, uidOrName: String, note: String): Boolean {
         val idx = bookings.indexOfFirst { it.id == bookingId }
         if (idx < 0) return false
-        val cancelled = bookings.removeAt(idx)
-        // Promote first waitlist match FIFO
+        val b = bookings[idx]
+        if (b.status == BookingStatus.CANCELLED) return false // already cancelled
+        // If already pending, just update note
+        val newCR = (b.cancellationRequest ?: CancellationRequest())
+            .copy(
+                note = note.trim(),
+                requestedBy = uidOrName,
+                requestedAt = System.currentTimeMillis(),
+                status = "pending",
+                processedAt = 0L
+            )
+
+        bookings[idx] = b.copy(
+            status = BookingStatus.PENDING_CANCEL,
+            cancellationRequest = newCR
+        )
+        return true
+    }
+
+    /** Admin approves: mark CANCELLED and promote first matching waitlist entry. */
+    fun approveCancellation(bookingId: String): Boolean {
+        val idx = bookings.indexOfFirst { it.id == bookingId }
+        if (idx < 0) return false
+        val b = bookings[idx]
+
+        // Update booking to CANCELLED + stamp processed time
+        val cr = (b.cancellationRequest ?: CancellationRequest()).copy(
+            status = "approved",
+            processedAt = System.currentTimeMillis()
+        )
+        bookings[idx] = b.copy(status = BookingStatus.CANCELLED, cancellationRequest = cr)
+
+        // Promote first waitlist candidate that matches the exact slot
         val candidateIdx = waitlist.indexOfFirst {
-            it.facilityId == cancelled.facilityId &&
-                    it.date == cancelled.date &&
-                    it.start == cancelled.start &&
-                    it.end == cancelled.end
+            it.facilityId == b.facilityId &&
+                    it.date == b.date &&
+                    it.start == b.start &&
+                    it.end == b.end
         }
         if (candidateIdx >= 0) {
             val w = waitlist.removeAt(candidateIdx)
@@ -103,11 +147,33 @@ object Repo {
                 start = w.start,
                 end = w.end,
                 bookedBy = w.name,
-                paid = false
+                paid = false,
+                status = BookingStatus.BOOKED,
+                cancellationRequest = null
             )
         }
         return true
     }
+
+    /** Admin denies: revert back to BOOKED and mark request as denied. */
+    fun denyCancellation(bookingId: String): Boolean {
+        val idx = bookings.indexOfFirst { it.id == bookingId }
+        if (idx < 0) return false
+        val b = bookings[idx]
+        val cr = (b.cancellationRequest ?: CancellationRequest()).copy(
+            status = "denied",
+            processedAt = System.currentTimeMillis()
+        )
+        bookings[idx] = b.copy(status = BookingStatus.BOOKED, cancellationRequest = cr)
+        return true
+    }
+
+    /** Old cancel() now acts like an admin force-cancel (kept for backward-compat). */
+    fun cancel(bookingId: String): Boolean = approveCancellation(bookingId)
+
+    /* ==========================================================
+       Equipment & maintenance
+       ========================================================== */
 
     fun rent(equipmentId: String, qty: Int): Boolean {
         val idx = equipment.indexOfFirst { it.id == equipmentId }

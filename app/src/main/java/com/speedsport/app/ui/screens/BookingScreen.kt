@@ -1,12 +1,17 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class
+)
 
 package com.speedsport.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,6 +19,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.*
 import com.speedsport.app.domain.BookingDraft
 import com.speedsport.app.domain.EquipmentItem as DraftEquip
@@ -31,13 +37,7 @@ import java.time.ZoneId
 private const val DB_URL =
     "https://speedsport-edf02-default-rtdb.asia-southeast1.firebasedatabase.app"
 
-/**
- * Booking screen that supports:
- *  - Tap start, then tap end (multiple contiguous hours)
- *  - If user taps only once, it's a 1-hour booking
- *  - Equipment selection
- *  - Back arrow (when onBack != null)
- */
+/* ========================= Entry ========================= */
 @Composable
 fun BookingScreen(
     onProceed: (BookingDraft) -> Unit,
@@ -46,26 +46,26 @@ fun BookingScreen(
     // ------------ State ------------
     var selectedDate by remember { mutableStateOf(todayKx()) }
     var selectedSport by rememberSaveable { mutableStateOf("") }
-    var selectedCourt by rememberSaveable { mutableStateOf("") }
+    var selectedCourtId by rememberSaveable { mutableStateOf("") }
     var rangeStart by rememberSaveable { mutableStateOf<String?>(null) }
     var rangeEnd by rememberSaveable { mutableStateOf<String?>(null) }
 
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    // ------------ Facilities ------------
-    val facilities by rememberFacilities()
-    val sports = remember(facilities) {
-        facilities.map { it.type.trim() }
-            .distinctBy { it.lowercase() }
-            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it })
-    }
+    // ------------ Load sports from /sports (fallback to facilities if empty) ------------
+    val facilities by rememberFacilities() // we keep this to build courts and as fallback
+    val sports by rememberSports(facilities)
+
+    // ------------ Courts for chosen sport ------------
     val courtsForSport = remember(facilities, selectedSport) {
         if (selectedSport.isBlank()) emptyList() else facilities.filter {
             it.type.equals(selectedSport, ignoreCase = true)
         }
     }
-    val courtIds = courtsForSport.map { it.id }
+    val selectedCourtName = remember(courtsForSport, selectedCourtId) {
+        courtsForSport.firstOrNull { it.id == selectedCourtId }?.name.orEmpty()
+    }
 
     // ------------ Equipment ------------
     val equipmentState = rememberEquipmentForSport(selectedSport)
@@ -73,15 +73,15 @@ fun BookingScreen(
     LaunchedEffect(selectedSport) { selectedEquip.clear() }
 
     // ------------ Time / bookings ------------
-    val allSlots = remember { (8 until 22).map { "%02d:00".format(it) } }
+    val allStarts = remember { (8 until 22).map { "%02d:00".format(it) } } // 08:00..21:00 starts
     val dateKey = remember(selectedDate) { selectedDate.asKey() }
-    val takenStarts = rememberTakenStarts(selectedCourt, dateKey)
+    val takenStarts = rememberTakenStarts(selectedCourtId, dateKey)
 
     val isToday = remember(selectedDate) { selectedDate == todayKx() }
     val nowLocal = remember(isToday) { if (isToday) LocalTime.now() else null }
 
-    LaunchedEffect(selectedSport) { selectedCourt = ""; rangeStart = null; rangeEnd = null }
-    LaunchedEffect(selectedCourt, selectedDate) { rangeStart = null; rangeEnd = null }
+    LaunchedEffect(selectedSport) { selectedCourtId = ""; rangeStart = null; rangeEnd = null }
+    LaunchedEffect(selectedCourtId, selectedDate) { rangeStart = null; rangeEnd = null }
 
     // ------------ Date Picker (block past) ------------
     var showDatePicker by remember { mutableStateOf(false) }
@@ -103,10 +103,7 @@ fun BookingScreen(
                     title = { Text("Book a Facility") },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
-                            Icon(
-                                imageVector = androidx.compose.material.icons.Icons.Filled.ArrowBack,
-                                contentDescription = "Back"
-                            )
+                            Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
                         }
                     }
                 )
@@ -128,7 +125,7 @@ fun BookingScreen(
                 OutlinedButton(onClick = { showDatePicker = true }) { Text("Change date") }
             }
 
-            // Sport
+            // Sport (from /sports)
             item {
                 Text("Sport", style = MaterialTheme.typography.titleMedium)
                 SimpleDropdownField(
@@ -140,20 +137,25 @@ fun BookingScreen(
                 )
             }
 
-            // Court
+            // Court (show names, return id)
             item {
                 Text("Court", style = MaterialTheme.typography.titleMedium)
-                SimpleDropdownField(
-                    value = selectedCourt,
+
+                val courtNames = courtsForSport.map { it.name }
+                val valueShown = selectedCourtName
+
+                NameDropdownField(
+                    valueLabel = valueShown,
                     label = when {
-                        sports.isEmpty() -> "No sports in database"
                         selectedSport.isBlank() -> "Choose sport first"
-                        courtIds.isEmpty() -> "No courts for $selectedSport"
+                        courtNames.isEmpty() -> "No courts for $selectedSport"
                         else -> "Choose court"
                     },
-                    options = courtIds,
-                    onSelected = { selectedCourt = it },
-                    enabled = courtIds.isNotEmpty()
+                    names = courtNames,
+                    onSelectedIndex = { idx ->
+                        courtsForSport.getOrNull(idx)?.let { selectedCourtId = it.id }
+                    },
+                    enabled = courtNames.isNotEmpty()
                 )
             }
 
@@ -168,7 +170,7 @@ fun BookingScreen(
                 )
 
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(allSlots) { slot ->
+                    items(allStarts) { slot ->
                         val isBooked = slot in takenStarts
                         val isPast = isToday && nowLocal?.let { slotIsPast(slot, it) } == true
                         val enabled = !isBooked && !isPast
@@ -189,6 +191,44 @@ fun BookingScreen(
                             label = { Text(slot) },
                             colors = if (isBooked) bookedColors else FilterChipDefaults.filterChipColors()
                         )
+                    }
+                }
+
+                // Booked slots → allow Join Waitlist
+                val bookedSlots = remember(takenStarts) { allStarts.filter { it in takenStarts } }
+                if (selectedCourtId.isNotBlank() && bookedSlots.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("Booked slots (join waitlist):", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(6.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        bookedSlots.forEach { st ->
+                            val slotKey = "$st-${plusOneHour(st)}"
+                            AssistChip(
+                                onClick = {
+                                    val courtName = selectedCourtName.ifBlank {
+                                        courtsForSport.firstOrNull { it.id == selectedCourtId }?.name ?: selectedCourtId
+                                    }
+                                    joinWaitlist(
+                                        sport = selectedSport.ifBlank { "Unknown" },
+                                        courtId = selectedCourtId,
+                                        courtName = courtName,
+                                        dateKey = dateKey,
+                                        slotKey = slotKey
+                                    ) { ok ->
+                                        scope.launch {
+                                            snackbar.showSnackbar(
+                                                if (ok) "Joined waitlist for $slotKey"
+                                                else "Failed to join waitlist"
+                                            )
+                                        }
+                                    }
+                                },
+                                label = { Text(slotKey) }
+                            )
+                        }
                     }
                 }
             }
@@ -214,9 +254,7 @@ fun BookingScreen(
                                 Text("Loading $selectedSport equipment…")
                             }
                         }
-                        equipment.isEmpty() -> {
-                            Text("No equipment found for $selectedSport")
-                        }
+                        equipment.isEmpty() -> Text("No equipment available for $selectedSport")
                         else -> {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 equipment.forEach { item ->
@@ -248,7 +286,7 @@ fun BookingScreen(
                         when {
                             selectedSport.isBlank() ->
                                 scope.launch { snackbar.showSnackbar("Choose a sport") }
-                            selectedCourt.isBlank() ->
+                            selectedCourtId.isBlank() ->
                                 scope.launch { snackbar.showSnackbar("Choose a court") }
                             rangeStart == null ->
                                 scope.launch { snackbar.showSnackbar("Choose a time") }
@@ -263,11 +301,10 @@ fun BookingScreen(
                                 if (hasBooked) { snackbar.showSnackbar("Selected range includes booked slot(s)."); return@launch }
                                 if (hasPast)   { snackbar.showSnackbar("Selected range includes past time(s).");   return@launch }
 
-                                val court = courtsForSport.firstOrNull { it.id == selectedCourt }
+                                val court = courtsForSport.firstOrNull { it.id == selectedCourtId }
                                 val ratePerHour = court?.ratePerHour ?: 0.0
-                                val courtName = court?.name ?: selectedCourt
+                                val courtName = court?.name ?: selectedCourtId
 
-                                // Build draft equipment list from selected quantities
                                 val equipDraft: List<DraftEquip> =
                                     (equipmentState.value ?: emptyList()).mapNotNull {
                                         val qty = selectedEquip[it.key] ?: 0
@@ -277,7 +314,7 @@ fun BookingScreen(
                                 val draft = BookingDraft(
                                     dateIso = dateKey,
                                     sport = selectedSport,
-                                    courtId = selectedCourt,
+                                    courtId = selectedCourtId,
                                     courtName = courtName,
                                     courtRatePerHour = ratePerHour,
                                     selectedTimes = hours,
@@ -310,17 +347,15 @@ fun BookingScreen(
             dismissButton = {
                 TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
             }
-        ) {
-            DatePicker(state = datePickerState)
-        }
+        ) { DatePicker(state = datePickerState) }
     }
 }
 
-/* ========================= Helpers & models ========================= */
+/* ========================= Data & helpers ========================= */
 
 private data class FacilityRow(
     val id: String,
-    val type: String,
+    val type: String,          // sport
     val name: String,
     val ratePerHour: Double = 0.0
 )
@@ -332,27 +367,31 @@ private data class EquipmentUiItem(
     val rentalRate: Double
 )
 
+/** Load ALL facilities once and keep listening. */
 @Composable
 private fun rememberFacilities(): State<List<FacilityRow>> {
     var list by remember { mutableStateOf(emptyList<FacilityRow>()) }
 
     DisposableEffect(Unit) {
-        val db = FirebaseDatabase.getInstance(DB_URL)
-        val ref = db.reference.child("facilities")
-
+        val ref = FirebaseDatabase.getInstance(DB_URL).reference.child("facilities")
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val acc = mutableListOf<FacilityRow>()
-                for (child in snapshot.children) {
-                    val id = child.key ?: continue
-                    val typeFromDb = child.child("type").getValue(String::class.java)
-                    val nameFromDb = child.child("name").getValue(String::class.java)
-                    val rate = (child.child("ratePerHour").value as? Number)?.toDouble()
-                        ?: (child.child("ratePerHour").getValue(String::class.java)?.toDoubleOrNull() ?: 0.0)
-
-                    val type = typeFromDb ?: id.extractSportType() ?: continue
-                    val name = nameFromDb ?: id
-                    acc += FacilityRow(id = id, type = type, name = name, ratePerHour = rate)
+                for (c in snapshot.children) {
+                    val id = c.key ?: continue
+                    val sport =
+                        c.child("type").getValue(String::class.java)
+                            ?: c.child("sport").getValue(String::class.java)
+                            ?: id.extractSportType()
+                            ?: continue
+                    val name = c.child("name").getValue(String::class.java) ?: id
+                    val rate =
+                        (c.child("hourlyRateMYR").value as? Number)?.toDouble()
+                            ?: (c.child("hourlyRateMYR").getValue(String::class.java)?.toDoubleOrNull())
+                            ?: (c.child("ratePerHour").value as? Number)?.toDouble()
+                            ?: (c.child("ratePerHour").getValue(String::class.java)?.toDoubleOrNull())
+                            ?: 0.0
+                    acc += FacilityRow(id = id, type = sport, name = name, ratePerHour = rate)
                 }
                 list = acc
             }
@@ -364,11 +403,40 @@ private fun rememberFacilities(): State<List<FacilityRow>> {
     return remember { derivedStateOf { list } }
 }
 
+/** Load sports from /sports. If empty, fallback to unique facility types. */
+@Composable
+private fun rememberSports(facilities: List<FacilityRow>): State<List<String>> {
+    var sports by remember { mutableStateOf(emptyList<String>()) }
+
+    DisposableEffect(Unit) {
+        val ref = FirebaseDatabase.getInstance(DB_URL).reference.child("sports")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val fromDb = snapshot.children.mapNotNull { it.key?.trim() }.filter { it.isNotEmpty() }
+                sports = if (fromDb.isNotEmpty()) {
+                    fromDb.sorted()
+                } else {
+                    facilities.map { it.type.trim() }
+                        .filter { it.isNotEmpty() }
+                        .distinctBy { it.lowercase() }
+                        .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it })
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {
+                sports = facilities.map { it.type }.distinctBy { it.lowercase() }.sorted()
+            }
+        }
+        ref.addValueEventListener(listener)
+        onDispose { ref.removeEventListener(listener) }
+    }
+    return remember { derivedStateOf { sports } }
+}
+
+/* ---- simple mapping so booking still offers items ---- */
 private val sportToEquipmentKeys: Map<String, Set<String>> = mapOf(
     "badminton" to setOf("racquet", "shuttle", "shuttlecock"),
     "pickleball" to setOf("paddle")
 )
-
 private val sportLabelTokens: Map<String, List<String>> = mapOf(
     "badminton" to listOf("racquet", "racket", "shuttle", "shuttlecock"),
     "pickleball" to listOf("paddle", "ball")
@@ -389,30 +457,23 @@ private fun rememberEquipmentForSport(selectedSport: String): MutableState<List<
         val allowedKeys = sportToEquipmentKeys[sportKey].orEmpty().map { it.lowercase() }
         val tokens = sportLabelTokens[sportKey].orEmpty().map { it.lowercase() }
 
-        val db = FirebaseDatabase.getInstance(DB_URL)
-        val ref = db.reference.child("equipment")
-
+        val ref = FirebaseDatabase.getInstance(DB_URL).reference.child("equipment")
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val acc = mutableListOf<EquipmentUiItem>()
                 for (child in snapshot.children) {
                     val key = child.key?.lowercase() ?: continue
-
                     val rawLabel = child.child("label").getValue(String::class.java) ?: key
-                    val labelLower = rawLabel.lowercase()
                     val rentalRate = (child.child("rentalRate").value as? Number)?.toDouble()
                         ?: (child.child("rentalRate").getValue(String::class.java)?.toDoubleOrNull() ?: 0.0)
                     val stock = (child.child("stock").value as? Number)?.toInt() ?: 0
 
                     val byKey = allowedKeys.isNotEmpty() && key in allowedKeys
-                    val byTokens = tokens.any { t -> labelLower.contains(t) }
+                    val byTokens = tokens.any { t -> rawLabel.lowercase().contains(t) }
 
                     if (byKey || byTokens) {
                         acc += EquipmentUiItem(
-                            key = key,
-                            label = rawLabel,
-                            stock = stock,
-                            rentalRate = rentalRate
+                            key = key, label = rawLabel, stock = stock, rentalRate = rentalRate
                         )
                     }
                 }
@@ -420,13 +481,14 @@ private fun rememberEquipmentForSport(selectedSport: String): MutableState<List<
             }
             override fun onCancelled(error: DatabaseError) { state.value = emptyList() }
         }
-
         ref.addValueEventListener(listener)
         onDispose { ref.removeEventListener(listener) }
     }
 
     return state
 }
+
+/* ---------- UI bits ---------- */
 
 @Composable
 private fun SimpleDropdownField(
@@ -467,6 +529,46 @@ private fun SimpleDropdownField(
     }
 }
 
+/** Same look as SimpleDropdownField, but presents a list of names and returns the selected index. */
+@Composable
+private fun NameDropdownField(
+    valueLabel: String,
+    label: String,
+    names: List<String>,
+    onSelectedIndex: (Int) -> Unit,
+    enabled: Boolean = true
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded && enabled,
+        onExpandedChange = { if (enabled) expanded = !expanded }
+    ) {
+        OutlinedTextField(
+            value = valueLabel,
+            onValueChange = {},
+            readOnly = true,
+            enabled = enabled,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier
+                .menuAnchor()
+                .fillMaxWidth()
+        )
+        ExposedDropdownMenu(
+            expanded = expanded && enabled,
+            onDismissRequest = { expanded = false }
+        ) {
+            names.forEachIndexed { idx, n ->
+                DropdownMenuItem(
+                    text = { Text(n) },
+                    onClick = { onSelectedIndex(idx); expanded = false }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun EquipmentRow(
     item: EquipmentUiItem,
@@ -491,10 +593,7 @@ private fun EquipmentRow(
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = onDec, enabled = qty > 0) { Text("-") }
             Text(qty.toString(), modifier = Modifier.padding(horizontal = 12.dp))
-            OutlinedButton(
-                onClick = onInc,
-                enabled = (item.stock <= 0) || (qty < item.stock)
-            ) { Text("+") }
+            OutlinedButton(onClick = onInc, enabled = (item.stock <= 0) || (qty < item.stock)) { Text("+") }
         }
     }
 }
@@ -525,15 +624,13 @@ private fun LegendBox(color: androidx.compose.ui.graphics.Color, label: String) 
     }
 }
 
-/** Today as kotlinx LocalDate */
+/* ---------- Time helpers ---------- */
 private fun todayKx(): LocalDate =
     Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
 
-/** "yyyy-MM-dd" */
 private fun LocalDate.asKey(): String =
     "%04d-%02d-%02d".format(year, monthNumber, dayOfMonth)
 
-/** Taken starts from /facilityBookings/{facilityId}/{date}/{HH:MM-HH:MM} */
 @Composable
 private fun rememberTakenStarts(facilityId: String, dateKey: String): Set<String> {
     var starts by remember(facilityId, dateKey) { mutableStateOf(emptySet<String>()) }
@@ -543,8 +640,8 @@ private fun rememberTakenStarts(facilityId: String, dateKey: String): Set<String
             starts = emptySet()
             return@DisposableEffect onDispose { }
         }
-        val db = FirebaseDatabase.getInstance(DB_URL)
-        val ref = db.reference.child("facilityBookings").child(facilityId).child(dateKey)
+        val ref = FirebaseDatabase.getInstance(DB_URL)
+            .reference.child("facilityBookings").child(facilityId).child(dateKey)
 
         val listener = object : ValueEventListener {
             override fun onDataChange(s: DataSnapshot) {
@@ -558,7 +655,6 @@ private fun rememberTakenStarts(facilityId: String, dateKey: String): Set<String
     return starts
 }
 
-/** Range helpers */
 private fun inRange(slot: String, start: String?, end: String?): Boolean {
     if (start == null) return false
     val s = hmToMinutes(start)
@@ -567,7 +663,6 @@ private fun inRange(slot: String, start: String?, end: String?): Boolean {
     return t in s..e
 }
 
-/** Tap start → (optional) end. Third tap restarts at clicked. */
 private fun handleRangeClick(
     clicked: String,
     start: String?,
@@ -594,10 +689,7 @@ private fun hmToMinutes(hm: String): Int {
     val (h, m) = hm.split(":").map { it.toInt() }
     return h * 60 + m
 }
-
-private fun minutesToHm(min: Int): String =
-    "%02d:%02d".format(min / 60, min % 60)
-
+private fun minutesToHm(min: Int): String = "%02d:%02d".format(min / 60, min % 60)
 private fun plusOneHour(hm: String): String = minutesToHm(hmToMinutes(hm) + 60)
 
 private fun slotIsPast(slot: String, now: LocalTime): Boolean {
@@ -621,4 +713,37 @@ private fun String.extractSportType(): String? {
     val lettersOnly = this.takeWhile { it.isLetter() }
     if (lettersOnly.isEmpty()) return null
     return lettersOnly.replaceFirstChar { it.uppercase() }
+}
+
+/* ----- Waitlist write (client-only MVP) ----- */
+private fun joinWaitlist(
+    sport: String,
+    courtId: String,
+    courtName: String,
+    dateKey: String,
+    slotKey: String,
+    onResult: (Boolean) -> Unit
+) {
+    val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return onResult(false)
+    val db = FirebaseDatabase.getInstance(DB_URL).reference
+
+    val reqId = db.child("facilityWaitlist").child(courtId).child(dateKey).child(slotKey).push().key
+        ?: return onResult(false)
+
+    val data = mapOf(
+        "userId" to uid,
+        "joinedAt" to ServerValue.TIMESTAMP,
+        "status" to "queued",
+        "sport" to sport,
+        "courtName" to courtName
+    )
+
+    val updates = hashMapOf<String, Any>(
+        "/facilityWaitlist/$courtId/$dateKey/$slotKey/$reqId" to data,
+        "/userWaitlist/$uid/$reqId" to true
+    )
+
+    db.updateChildren(updates)
+        .addOnSuccessListener { onResult(true) }
+        .addOnFailureListener { onResult(false) }
 }

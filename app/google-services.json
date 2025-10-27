@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "559127742997",
+    "firebase_url": "https://speedsport-edf02-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "speedsport-edf02",
+    "storage_bucket": "speedsport-edf02.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:559127742997:android:b0fdf7bfc05302f97edc1c",
+        "android_client_info": {
+          "package_name": "com.speedsport.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD2DtLjIPTU5y9fzoFN98fBkEAKVZMwNcw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

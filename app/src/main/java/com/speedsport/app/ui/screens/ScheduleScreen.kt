@@ -18,6 +18,8 @@ private const val DB_URL =
     "https://speedsport-edf02-default-rtdb.asia-southeast1.firebasedatabase.app"
 
 private data class EquipmentRow(val name: String, val qty: Int, val rate: Double)
+
+/** status can be null (legacy), "booked", "pending_cancel", "cancelled", "completed" */
 private data class BookingRow(
     val id: String,
     val date: String,
@@ -28,13 +30,17 @@ private data class BookingRow(
     val ratePerHour: Double = 0.0,
     val totalPaid: Double = 0.0,
     val equipment: List<EquipmentRow> = emptyList(),
-    val voucherPercent: Int? = null
+    val voucherPercent: Int? = null,
+    val status: String? = null,
+    val cancelNote: String? = null,
+    val cancelStatus: String? = null
 ) {
     val hours: Int get() = times.size
     val courtSubtotal: Double get() = ratePerHour * hours
     val equipmentSubtotal: Double get() = equipment.sumOf { it.rate * it.qty }
     val subtotal: Double get() = courtSubtotal + equipmentSubtotal
     val pointsEarned: Int get() = totalPaid.toInt()
+    val isPendingCancel: Boolean get() = status == "pending_cancel" || cancelStatus == "pending"
 }
 
 @Composable
@@ -46,6 +52,7 @@ fun ScheduleScreen() {
     var bookings by remember { mutableStateOf<List<BookingRow>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var detailsFor by remember { mutableStateOf<BookingRow?>(null) }
+    var requestingCancelFor by remember { mutableStateOf<BookingRow?>(null) }
 
     LaunchedEffect(uid) {
         if (uid == null) { loading = false; return@LaunchedEffect }
@@ -83,7 +90,25 @@ fun ScheduleScreen() {
                                 val voucherPct = (s.child("voucher").child("percentOff").value as? Number)?.toInt()
                                     ?: s.child("voucher").child("percentOff").getValue(String::class.java)?.toIntOrNull()
 
-                                acc += BookingRow(id, date, sport, courtId, courtName, times, rate, totalPaid, equip, voucherPct)
+                                val status = s.child("status").getValue(String::class.java)
+                                val cancelNote = s.child("cancellationRequest").child("note").getValue(String::class.java)
+                                val cancelStatus = s.child("cancellationRequest").child("status").getValue(String::class.java)
+
+                                acc += BookingRow(
+                                    id = id,
+                                    date = date,
+                                    sport = sport,
+                                    courtId = courtId,
+                                    courtName = courtName,
+                                    times = times,
+                                    ratePerHour = rate,
+                                    totalPaid = totalPaid,
+                                    equipment = equip,
+                                    voucherPercent = voucherPct,
+                                    status = status,
+                                    cancelNote = cancelNote,
+                                    cancelStatus = cancelStatus
+                                )
                             } else {
                                 userIdxRef.child(id).removeValue()
                             }
@@ -114,12 +139,7 @@ fun ScheduleScreen() {
                     items(bookings, key = { it.id }) { b ->
                         BookingCard(
                             b = b,
-                            onCancel = {
-                                cancelBooking(b,
-                                    onError = { msg -> scope.launch { snackbar.showSnackbar(msg ?: "Failed to cancel.") } },
-                                    onSuccess = { scope.launch { snackbar.showSnackbar("Booking cancelled.") } }
-                                )
-                            },
+                            onRequestCancel = { requestingCancelFor = b },
                             onView = { detailsFor = b }
                         )
                     }
@@ -128,7 +148,7 @@ fun ScheduleScreen() {
         }
     }
 
-    // Bottom sheet with details
+    // Details bottom sheet
     if (detailsFor != null) {
         ModalBottomSheet(onDismissRequest = { detailsFor = null }) {
             val b = detailsFor!!
@@ -137,6 +157,13 @@ fun ScheduleScreen() {
                 Text("${b.date}  •  ${b.sport}")
                 Text(b.courtName)
                 Text("Time: ${spanLabel(b.times)}")
+                if (b.isPendingCancel) {
+                    AssistChip(onClick = {}, label = { Text("Cancellation pending review") })
+                    if (!b.cancelNote.isNullOrBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("Your note: ${b.cancelNote}")
+                    }
+                }
                 Divider()
                 Text("Payment", style = MaterialTheme.typography.titleMedium)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -174,10 +201,26 @@ fun ScheduleScreen() {
             }
         }
     }
+
+    // Cancel with note dialog
+    if (requestingCancelFor != null) {
+        CancelBookingDialog(
+            booking = requestingCancelFor!!,
+            onDismiss = { requestingCancelFor = null },
+            onSubmitted = {
+                requestingCancelFor = null
+                scope.launch { snackbar.showSnackbar("Cancellation request sent. Await admin decision.") }
+            }
+        )
+    }
 }
 
 @Composable
-private fun BookingCard(b: BookingRow, onCancel: () -> Unit, onView: () -> Unit) {
+private fun BookingCard(
+    b: BookingRow,
+    onRequestCancel: () -> Unit,
+    onView: () -> Unit
+) {
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("${b.date}  •  ${b.sport}", fontWeight = FontWeight.SemiBold)
@@ -192,11 +235,17 @@ private fun BookingCard(b: BookingRow, onCancel: () -> Unit, onView: () -> Unit)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 OutlinedButton(onClick = onView) { Text("View details") }
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = onCancel) { Text("Cancel") }
+                if (b.isPendingCancel) {
+                    AssistChip(onClick = {}, label = { Text("Cancellation pending review") })
+                } else {
+                    OutlinedButton(onClick = onRequestCancel) { Text("Cancel") }
+                }
             }
         }
     }
 }
+
+/* ---------- Helpers ---------- */
 
 private fun spanLabel(starts: List<String>): String {
     if (starts.isEmpty()) return "-"
@@ -213,6 +262,7 @@ private fun plusOneHour(hm: String): String {
     return "%02d:%02d".format(hh, mm)
 }
 
+/* ---------- Old hard delete (kept just in case; unused now) ---------- */
 private fun cancelBooking(
     b: BookingRow,
     onError: (String?) -> Unit,
@@ -233,4 +283,70 @@ private fun cancelBooking(
     db.updateChildren(updates)
         .addOnSuccessListener { onSuccess() }
         .addOnFailureListener { e -> onError(e.message) }
+}
+
+/* ---------- New: Cancel with note dialog ---------- */
+@Composable
+private fun CancelBookingDialog(
+    booking: BookingRow,
+    onDismiss: () -> Unit,
+    onSubmitted: () -> Unit
+) {
+    val uid = FirebaseAuth.getInstance().currentUser?.uid ?: ""
+    var note by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val db = remember { FirebaseDatabase.getInstance(DB_URL).reference }
+
+    AlertDialog(
+        onDismissRequest = { if (!loading) onDismiss() },
+        title = { Text("Request Cancellation") },
+        text = {
+            Column {
+                Text("Tell admin why you’re cancelling (optional but helpful):")
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it.take(400) },
+                    placeholder = { Text("E.g., injured, exam clash, transport issue…") },
+                    minLines = 3,
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !loading,
+                onClick = {
+                    loading = true
+                    // Write status + cancellationRequest (do NOT delete booking)
+                    val updates = hashMapOf<String, Any?>(
+                        "/bookings/${booking.id}/status" to "pending_cancel",
+                        "/bookings/${booking.id}/cancellationRequest" to mapOf(
+                            "note" to note.trim(),
+                            "requestedBy" to uid,
+                            "requestedAt" to ServerValue.TIMESTAMP,
+                            "status" to "pending",
+                            "processedAt" to 0
+                        )
+                    )
+                    db.updateChildren(updates)
+                        .addOnSuccessListener {
+                            loading = false
+                            onSubmitted()
+                        }
+                        .addOnFailureListener { e ->
+                            loading = false
+                            scope.launch {
+                                // local snackbar would be nicer, but we don't have it here
+                            }
+                        }
+                }
+            ) { Text(if (loading) "Submitting..." else "Submit") }
+        },
+        dismissButton = {
+            TextButton(enabled = !loading, onClick = onDismiss) { Text("Close") }
+        }
+    )
 }
